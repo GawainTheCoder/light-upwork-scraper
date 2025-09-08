@@ -14,17 +14,6 @@ Lightweight Playwright-based scraper to collect public Upwork freelancer profile
 - It’s not yet a high-scale scraper.
 - It avoids automated CAPTCHA solving. If a human verification appears, you complete it once and re-use the saved session.
 
-### Demo
-
-<video src="assets/upwork.mov" controls width="720">
-  Your browser does not support the video tag. You can download and watch the video here:
-  <a href="assets/upwork.mov">assets/upwork.mov</a>
-</video>
-
-If the embedded player doesn’t load on your device, use this link: [Watch the demo (MOV)](assets/upwork.mov)
-
----
-
 ### Quick Start
 
 1) Install dependencies
