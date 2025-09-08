@@ -1,4 +1,4 @@
-## Upwork Profile Scraper (Personal Learning Project)
+## Upwork Profile Scraper 
 
 Lightweight Playwright-based scraper to collect public Upwork freelancer profile details for learning and market research purposes. Supports:
 
@@ -11,7 +11,7 @@ Lightweight Playwright-based scraper to collect public Upwork freelancer profile
 > Important: This project is for personal learning. Respect Upwork’s Terms of Service and privacy. Focus on your own profile and public pages. Keep volumes tiny and human-like.
 
 ### What this is NOT
-- It’s not a high-scale scraper.
+- It’s not yet a high-scale scraper.
 - It avoids automated CAPTCHA solving. If a human verification appears, you complete it once and re-use the saved session.
 
 ---
