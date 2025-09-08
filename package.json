@@ -1,0 +1,21 @@
+{
+  "name": "upwork",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "scrape:profiles": "node src/scrape_profiles.js",
+    "login:record": "node src/login_record.js",
+    "login:persistent": "node src/login_persistent.js",
+    "scrape:myprofile": "node src/scrape_my_profile.js",
+    "export:csv": "node src/export_csv.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "playwright": "^1.55.0"
+  }
+}

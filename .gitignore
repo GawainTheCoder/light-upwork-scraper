@@ -1,0 +1,27 @@
+# Node & logs
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+
+# Playwright artifacts
+test-results/
+playwright-report/
+blob-report/
+
+# Sensitive/local data
+auth.json
+chrome-user-data/
+data/*.json
+data/*.jsonl
+data/*.csv
+data/*.png
+
+# Env
+.env
+.env.*
+
