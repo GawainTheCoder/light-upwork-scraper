@@ -1,4 +1,4 @@
-## Upwork Profile Scraper 
+## Upwork Profile Scraper (Node.js + Playwright)
 
 Lightweight Playwright-based scraper to collect public Upwork freelancer profile details for learning and market research purposes. Supports:
 
@@ -112,6 +112,25 @@ Not Done Yet:
    - Faster debugging if selectors change
 
 ---
+
+### Tech Stack & How It Works
+
+- Language/Runtime: JavaScript on Node.js
+- Core Library: Playwright
+- Browser: Persistent Google Chrome profile via Playwright
+- Storage: Local JSONL and CSV files in `data/`
+- No external scraping APIs or cloud services
+
+Flow:
+1) You authenticate once using a real Chrome window (persistent profile). This saves your session locally.
+2) Discovery visits Upwork Talent Search (e.g., "market research") to collect freelancer profile URLs.
+3) For each profile URL, the scraper opens the page with slow, human-like pacing, waits for content, and extracts key fields.
+4) Results are written incrementally to `data/profiles.jsonl` and can be exported to CSV.
+
+Why Playwright + persistent Chrome?
+- Realistic browser fingerprint and behavior reduces human-verification loops.
+- Simple, readable code with good control over waits, scrolling, and events.
+- Session persists across runs without storing credentials in code.
 
 ### Architecture & Approach
 
