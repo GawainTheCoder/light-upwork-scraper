@@ -4,7 +4,7 @@ import path from 'path';
 
 // Configuration
 const OUTPUT_DIR = path.resolve(process.cwd(), 'data');
-const OUTPUT_FILE = path.join(OUTPUT_DIR, 'projects_test.json');
+const OUTPUT_FILE = path.join(OUTPUT_DIR, 'projects_catalog.json');
 
 // Read project URLs from XML sitemap
 const SITEMAP_PATH = path.resolve(process.cwd(), 'data/sitemap-catalog-projects-10-.xml');
