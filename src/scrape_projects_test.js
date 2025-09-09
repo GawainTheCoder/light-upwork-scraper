@@ -6,13 +6,12 @@ import path from 'path';
 const OUTPUT_DIR = path.resolve(process.cwd(), 'data');
 const OUTPUT_FILE = path.join(OUTPUT_DIR, 'projects_test.json');
 
-// Project URLs to extract
-const PROJECT_URLS = [
-  'https://www.upwork.com/services/product/video-audio-elearning-video-editing-online-course-video-editor-online-course-content-1757006902855372800',
-  'https://www.upwork.com/services/product/video-audio-engaging-and-monetizable-sports-content-football-basketball-ufc-nfl-1957327419655920309',
-  'https://www.upwork.com/services/product/admin-customer-support-amazon-fba-virtual-assistant-product-hunting-sourcing-ppc-listing-1926614152344367317',
-  'https://www.upwork.com/services/product/design-modern-minimalist-catchy-easily-memorable-business-company-logo-designs-1563588602033639424'
-];
+// Read project URLs from XML sitemap
+const SITEMAP_PATH = path.resolve(process.cwd(), 'data/sitemap-catalog-projects-10-.xml');
+const xmlContent = fs.readFileSync(SITEMAP_PATH, 'utf-8');
+const urlMatches = xmlContent.match(/<loc>(https?:\/\/[^<]+)<\/loc>/g) || [];
+const allUrls = urlMatches.map(url => url.replace(/<\/?loc>/g, ''));
+const PROJECT_URLS = allUrls.slice(0, 5); // Use only first 5 URLs
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
