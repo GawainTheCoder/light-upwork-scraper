@@ -6,7 +6,7 @@ const SEARCH_TERMS = [
   'market research'
 ];
 
-const MAX_PROFILES = 3; // target sample size for iterative tests
+const MAX_PROFILES = 10; // increased to collect 7 more beyond the 3 we have
 const OUTPUT_DIR = path.resolve(process.cwd(), 'data');
 const OUTPUT_FILE = path.join(OUTPUT_DIR, 'profiles.jsonl');
 
@@ -53,6 +53,28 @@ async function ensureOutput() {
 
 function writeJsonl(record) {
   fs.appendFileSync(OUTPUT_FILE, JSON.stringify(record) + '\n');
+}
+
+// Load existing profile URLs from prior runs to enable cross-run dedupe
+function loadExistingProfileUrls() {
+  try {
+    if (!fs.existsSync(OUTPUT_FILE)) return new Set();
+    const text = fs.readFileSync(OUTPUT_FILE, 'utf-8');
+    const urls = [];
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj && typeof obj.url === 'string') {
+          const norm = obj.url.split('?')[0].split('#')[0];
+          if (/^https?:\/\/www\.upwork\.com\/freelancers\/~[A-Za-z0-9]+/.test(norm)) urls.push(norm);
+        }
+      } catch {}
+    }
+    return new Set(urls);
+  } catch {
+    return new Set();
+  }
 }
 
 async function collectProfileLinksFromSearch(page) {
@@ -588,7 +610,8 @@ async function main() {
   });
   const page = await context.newPage();
 
-  const collected = new Set();
+  // Seed collected with previously scraped profile URLs so we add 7 more up to MAX_PROFILES
+  const collected = loadExistingProfileUrls();
 
   for (const term of SEARCH_TERMS) {
     if (collected.size >= MAX_PROFILES) break;

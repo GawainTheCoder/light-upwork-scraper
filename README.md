@@ -7,6 +7,9 @@ Lightweight Playwright-based scraper to collect public Upwork freelancer profile
 - Profile extraction with slow, human-like pacing
 - JSONL output and CSV export
 - Optional: scrape your own profile using your saved session
+- Cross-run dedupe (re-runs add only new profiles)
+- Normalized numeric fields (hourlyRate, earningsTotal, jobSuccessScore)
+- Cleaner CSV with computed display values ($/hr, earnings, JSS)
 
 > Important: This project is for personal learning. Respect Upwork’s Terms of Service and privacy. Focus on your own profile and public pages. Keep volumes tiny and human-like.
 
@@ -29,7 +32,7 @@ npm run login:persistent
 # The session will be saved locally.
 ```
 
-3) Scrape ~10 "market research" profiles (public)
+3) Scrape ~10 "market research" profiles (public, cross-run dedupe)
 ```bash
 npm run scrape:profiles
 # Outputs:
@@ -52,7 +55,7 @@ Notes:
 
 ### Scripts
 - `npm run login:persistent` — Launch Chrome with a persistent profile and save session.
-- `npm run scrape:profiles` — Discover ~10 freelancer profiles (search: "market research") and extract fields.
+- `npm run scrape:profiles` — Discover ~10 freelancer profiles (search: "market research"), deduping across runs.
 - `npm run scrape:myprofile` — Extract your own profile using the saved session.
 - `npm run export:csv` — Convert `data/profiles.jsonl` to `data/profiles.csv`.
 
@@ -60,7 +63,7 @@ Notes:
 
 ### Outputs
 - `data/profiles.jsonl` — One JSON record per profile.
-- `data/profiles.csv` — CSV export for quick viewing.
+- `data/profiles.csv` — CSV export with normalized values and human-friendly display columns.
 - `data/my_profile.json` — Your profile snapshot (if you run `scrape:myprofile`).
 
 Example JSONL row:
@@ -69,9 +72,10 @@ Example JSONL row:
   "url": "https://www.upwork.com/freelancers/~01abc...",
   "name": "Jane D.",
   "headline": "Market Researcher",
-  "rate": "$30.00/hr",
-  "earnings": "Total earnings $10k+",
-  "jobSuccess": "100%",
+  "hourlyRate": 30,
+  "currency": "USD",
+  "earningsTotal": 10000,
+  "jobSuccessScore": 100,
   "location": "Toronto, Canada",
   "skills": ["Market Research", "Data Analysis"],
   "scrapedAt": "2025-09-08T...Z"
@@ -84,30 +88,26 @@ Example JSONL row:
 
 Working:
 - Persistent Chrome login/session (`chrome-user-data/`, `auth.json`) reduces verification loops
-- Discovery of profile links from Talent Search ("market research") with robust filtering to true `.../freelancers/~...` URLs
-- Slow pacing and small volume (good for learning)
-- JSONL and CSV outputs
+- Discovery of profile links from Talent Search ("market research") with strict `.../freelancers/~...` filtering
+- Cross-run dedupe and safe re-runs
+- Normalized core fields: `hourlyRate`, `currency`, `earningsTotal`, `jobSuccessScore`
+- CSV exporter computes `$xx.xx/hr`, `$X,XXX`, and `JSS%` for quick viewing
 
-Partially Working:
-- Field coverage: names and hourly rates are often captured; some profiles still return null for earnings, Job Success, and location due to lazy rendering and selector variability
-- Your profile extraction works, but may need improved selectors/waits for richer fields
-
-Not Done Yet:
-- CLI flags for search terms and count (currently edit in code)
-- Input list mode (provide exact profile URLs via a file)
-- Stronger extraction for earnings/JSS/location (network parsing + stable attributes)
+Partially Working / Next Up:
+- Section scrapers for Portfolio, Work History, Overview, and Linked Accounts (planned as separate JSONL outputs)
+- CLI flags for search terms, count, and section selection
+- Input URL list mode (provide curated profile links)
 
 ---
 
 ### Roadmap (Low-Code Improvements)
-1) CLI config for search terms and MAX_PROFILES
-   - Easier to switch markets without code edits
-2) Input URL list mode
-   - Let you provide a curated list of profile URLs
-3) Stronger extraction reliability
-   - Combine network-idle waits, gentle scrolling, stable data-attributes, and regex fallbacks
+1) Section scraper (`src/scrape_sections.js`)
+   - Read `data/profiles.jsonl`, output per-section JSONLs:
+     - `data/portfolio.jsonl`, `data/work_history.jsonl`, `data/overviews.jsonl`, `data/accounts.jsonl`
+   - Network-first parsing with DOM fallbacks
+2) CLI config for search terms and MAX_PROFILES
+3) Input URL list mode
 4) Better logging and screenshots on failures
-   - Faster debugging if selectors change
 
 ---
 
@@ -123,7 +123,7 @@ Flow:
 1) You authenticate once using a real Chrome window (persistent profile). This saves your session locally.
 2) Discovery visits Upwork Talent Search (e.g., "market research") to collect freelancer profile URLs.
 3) For each profile URL, the scraper opens the page with slow, human-like pacing, waits for content, and extracts key fields.
-4) Results are written incrementally to `data/profiles.jsonl` and can be exported to CSV.
+4) Results are written incrementally to `data/profiles.jsonl` (deduped across runs) and can be exported to CSV.
 
 Why Playwright + persistent Chrome?
 - Realistic browser fingerprint and behavior reduces human-verification loops.
@@ -174,7 +174,7 @@ Why Playwright + persistent Chrome?
   - Keep volumes tiny; navigate slowly; retry later if blocked
 - Empty fields:
   - Profile content may be lazy-loaded; re-run `scrape:profiles` and consider increasing waits
-  - We’ll add stronger selectors and network parsing in the roadmap
+  - Network-first capture + scroll depth usually resolves this
 
 ---
 
