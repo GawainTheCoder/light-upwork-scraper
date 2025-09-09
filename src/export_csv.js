@@ -13,6 +13,17 @@ function toCsvValue(v) {
   return s;
 }
 
+function normalizeUrl(u) {
+  try {
+    const url = new URL(u, 'https://www.upwork.com');
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return u || '';
+  }
+}
+
 async function main() {
   if (!fs.existsSync(INPUT)) {
     console.error('Input not found:', INPUT);
@@ -25,7 +36,10 @@ async function main() {
 
   const headers = ['url','name','headline','rate','earnings','jobSuccess','location','skills','scrapedAt'];
   const csv = [headers.join(',')].concat(
-    rows.map(r => headers.map(h => toCsvValue(r[h])).join(','))
+    rows.map(r => {
+      const row = { ...r, url: normalizeUrl(r.url) };
+      return headers.map(h => toCsvValue(row[h])).join(',');
+    })
   ).join('\n');
 
   fs.writeFileSync(OUTPUT, csv);
