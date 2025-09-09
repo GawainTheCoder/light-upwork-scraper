@@ -6,8 +6,13 @@ import path from 'path';
 const OUTPUT_DIR = path.resolve(process.cwd(), 'data');
 const OUTPUT_FILE = path.join(OUTPUT_DIR, 'projects_test.json');
 
-// Project URL to extract (change as needed)
-const PROJECT_URL = 'https://www.upwork.com/services/product/design-modern-minimalist-catchy-easily-memorable-business-company-logo-designs-1563588602033639424';
+// Project URLs to extract
+const PROJECT_URLS = [
+  'https://www.upwork.com/services/product/video-audio-elearning-video-editing-online-course-video-editor-online-course-content-1757006902855372800',
+  'https://www.upwork.com/services/product/video-audio-engaging-and-monetizable-sports-content-football-basketball-ufc-nfl-1957327419655920309',
+  'https://www.upwork.com/services/product/admin-customer-support-amazon-fba-virtual-assistant-product-hunting-sourcing-ppc-listing-1926614152344367317',
+  'https://www.upwork.com/services/product/design-modern-minimalist-catchy-easily-memorable-business-company-logo-designs-1563588602033639424'
+];
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -245,15 +250,9 @@ async function extractProject(page, url) {
 }
 
 async function main() {
-  console.log('Starting single project scraper...');
+  console.log('Starting project scraper...');
+  console.log(`Found ${PROJECT_URLS.length} projects to process\n`);
   
-  // Validate PROJECT_URL placeholder
-  if (PROJECT_URL === 'https://www.upwork.com/services/product/TU-SLUG-1234567890') {
-    console.error('Please set PROJECT_URL to the real Project Catalog URL you want to scrape.');
-    console.log('Example: https://www.upwork.com/services/product/writing-translation-a-high-quality-article-100-unique-engaging-content-for-your-website-1336690966759510016');
-    return;
-  }
-
   await ensureOutput();
   
   // Create directory for browser user data
@@ -263,34 +262,57 @@ async function main() {
   // Open browser
   console.log('Opening browser...');
   const context = await chromium.launchPersistentContext(persistentDir, {
-    headless: false, // Mostrar navegador
+    headless: false,
     channel: 'chrome',
     viewport: { width: 1360, height: 900 },
     args: ['--disable-blink-features=AutomationControlled', '--lang=en-US']
   });
   
   const page = await context.newPage();
+  const allProjectsData = [];
 
   try {
-    // Extract project data
-    const projectData = await extractProject(page, PROJECT_URL);
+    // Process each URL
+    for (let i = 0; i < PROJECT_URLS.length; i++) {
+      const url = PROJECT_URLS[i];
+      console.log(`\nProcessing project ${i + 1} of ${PROJECT_URLS.length}:`);
+      console.log(url);
+      
+      try {
+        // Extract project data
+        const projectData = await extractProject(page, url);
+        
+        if (projectData) {
+          allProjectsData.push(projectData);
+          console.log('Project extracted successfully');
+        } else {
+          console.error('Could not extract the project data');
+        }
+      } catch (error) {
+        console.error(`Error processing project: ${error.message}`);
+      }
+      
+      // Small delay between requests
+      if (i < PROJECT_URLS.length - 1) {
+        await sleep(2000);
+      }
+    }
     
-    if (projectData) {
-      // Write JSON output
-      fs.writeFileSync(OUTPUT_FILE, JSON.stringify(projectData, null, 2));
-
-      console.log('Project extracted successfully.');
+    // Save all projects to a single file
+    if (allProjectsData.length > 0) {
+      fs.writeFileSync(OUTPUT_FILE, JSON.stringify(allProjectsData, null, 2));
+      console.log(`\nSuccessfully extracted ${allProjectsData.length} out of ${PROJECT_URLS.length} projects`);
       console.log('Saved to:', OUTPUT_FILE);
     } else {
-      console.error('Could not extract the project');
+      console.log('\nNo projects were successfully extracted');
     }
     
   } catch (error) {
-    console.error('Extraction error:', error.message);
+    console.error('Fatal error:', error);
   } finally {
     // Close browser
     await context.close();
-    console.log('Browser closed');
+    console.log('\nBrowser closed');
   }
 }
 
