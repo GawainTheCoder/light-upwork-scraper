@@ -6,6 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "scrape:profiles": "node src/scrape_profiles.js",
+    "scrape:projects_catalog": "node src/scrape_projects_catalog.js",
     "login:record": "node src/login_record.js",
     "login:persistent": "node src/login_persistent.js",
     "scrape:myprofile": "node src/scrape_my_profile.js",
