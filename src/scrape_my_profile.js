@@ -61,7 +61,7 @@ async function main() {
   const record = {
     url: page.url(),
     name: await text(['main h1', '[data-test="profile-title"]', '[data-qa="freelancer-name"]']),
-    headline: await text(['[data-test="title"]', '[data-test="profile-overview-title"]', '[data-qa="freelancer-title"]']),
+    title: await text(['[data-test="title"]', '[data-test="profile-overview-title"]', '[data-qa="freelancer-title"]']),
     rate: await text(['[data-test="rate"]', '[data-qa="rate"]']),
     earnings: await text(['text=/Total (earned|earnings)/i', '[data-test="earnings"]', '[data-qa="earnings"]']),
     jobSuccess: await text(['text=/Job Success/i', '[data-test="job-success-score"]', '[data-qa="jss"]']),

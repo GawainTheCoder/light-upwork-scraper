@@ -54,7 +54,7 @@ async function main() {
 
   // Include both display columns and normalized numeric columns
   const headers = [
-    'url','name','headline',
+    'url','name','title',
     'rate','earnings','jobSuccess',
     'hourlyRate','currency','earningsTotal','jobSuccessScore',
     'location','skills','scrapedAt'
@@ -71,6 +71,8 @@ async function main() {
       const jssDisplay = row.jobSuccess || (row.jobSuccessScore !== undefined && row.jobSuccessScore !== null
         ? `${row.jobSuccessScore}%` : '');
 
+      // Backward compatibility: some older rows may still contain 'headline' instead of 'title'
+      if (!row.title && row.headline) row.title = row.headline;
       const out = {
         ...row,
         rate: rateDisplay,

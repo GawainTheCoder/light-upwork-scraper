@@ -25,3 +25,20 @@ data/*.png
 .env
 .env.*
 
+# Python virtualenvs & caches
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+
+# LinkedIn finder outputs & local artifacts
+linkedin_finder/.venv/
+linkedin_finder/__pycache__/
+linkedin_finder/out*.csv
+linkedin_finder/*.tmp.csv
+linkedin_finder/*.log
+
+# Specific data artifacts to ignore
+data/profiles.jsonl.backup
+linkedin_finder/fixtures/sample.jsonl
+

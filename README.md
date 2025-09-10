@@ -39,6 +39,17 @@ npm run scrape:profiles
 # - data/profiles.jsonl
 # - data/profiles.csv
 ```
+Optional CLI flags (pass after --):
+```bash
+# Search one or multiple terms
+npm run scrape:profiles -- --search="market research, social media manager"
+
+# Load search terms from a file (one per line)
+npm run scrape:profiles -- --search-file=terms.txt
+
+# Limit total new profiles this run
+npm run scrape:profiles -- --max=5
+```
 
 4) Scrape your own profile (optional)
 ```bash
@@ -55,7 +66,7 @@ Notes:
 
 ### Scripts
 - `npm run login:persistent` — Launch Chrome with a persistent profile and save session.
-- `npm run scrape:profiles` — Discover ~10 freelancer profiles (search: "market research"), deduping across runs.
+- `npm run scrape:profiles` — Discover freelancer profiles, deduping across runs. Supports `--search`, `--search-file`, and `--max`.
 - `npm run scrape:myprofile` — Extract your own profile using the saved session.
 - `npm run export:csv` — Convert `data/profiles.jsonl` to `data/profiles.csv`.
 
@@ -70,15 +81,26 @@ Example JSONL row:
 ```json
 {
   "url": "https://www.upwork.com/freelancers/~01abc...",
+  "source": "upwork",
+  "externalId": "01abc123def456",
   "name": "Jane D.",
-  "headline": "Market Researcher",
+  "title": "Market Researcher & Data Analysis Specialist",
+  "description": "Hi! I'm Jane, a market researcher with 5+ years of experience helping businesses understand their customers and competitors. I specialize in quantitative analysis, survey design, and competitive intelligence...",
   "hourlyRate": 30,
   "currency": "USD",
   "earningsTotal": 10000,
   "jobSuccessScore": 100,
   "location": "Toronto, Canada",
-  "skills": ["Market Research", "Data Analysis"],
-  "scrapedAt": "2025-09-08T...Z"
+  "skills": ["Market Research", "Data Analysis", "Survey Design", "Competitive Analysis"],
+  "categories": ["Market Research"],
+  "primaryCategory": "Sales & Marketing", 
+  "searchQuery": "market research",
+  "totalJobs": 45,
+  "totalHours": 520,
+  "languages": [{"name": "English", "level": "Native"}, {"name": "French", "level": "Conversational"}],
+  "badges": ["top_rated"],
+  "availability": "More than 30 hrs/week",
+  "scrapedAt": "2025-09-10T...Z"
 }
 ```
 
@@ -88,26 +110,41 @@ Example JSONL row:
 
 Working:
 - Persistent Chrome login/session (`chrome-user-data/`, `auth.json`) reduces verification loops
-- Discovery of profile links from Talent Search ("market research") with strict `.../freelancers/~...` filtering
+- Discovery of profile links from Talent Search with strict `.../freelancers/~...` filtering
 - Cross-run dedupe and safe re-runs
+- Full profile extraction: titles, descriptions, skills, rates, stats, languages, badges, availability
+- Professional title extraction from DOM structure (`h2.h4` selectors)
+- Profile description extraction from line-clamped content areas
+- Title fallback extraction from first line of profile descriptions
 - Normalized core fields: `hourlyRate`, `currency`, `earningsTotal`, `jobSuccessScore`
 - CSV exporter computes `$xx.xx/hr`, `$X,XXX`, and `JSS%` for quick viewing
+- Full CLI support: `--search`, `--search-file`, `--max` flags
+- Search query tracking per profile
+- Category detection (basic - primary/secondary when available)
 
-Partially Working / Next Up:
-- Section scrapers for Portfolio, Work History, Overview, and Linked Accounts (planned as separate JSONL outputs)
-- CLI flags for search terms, count, and section selection
+Known Limitations:
+- **Rate limiting**: Upwork implements anti-bot measures. Keep volumes small (1-5 profiles per session) and space out runs by hours to avoid timeouts
+- **Session degradation**: Persistent sessions may get flagged over time. Refresh login if experiencing timeouts
+
+Next Up:
+- Section scrapers for Portfolio, Work History, and Linked Accounts (planned as separate JSONL outputs)
+- Enhanced category extraction  
 - Input URL list mode (provide curated profile links)
+- Better anti-detection measures (human-like scrolling, mouse movements)
 
 ---
 
-### Roadmap (Low-Code Improvements)
+### Roadmap (Future Improvements)
 1) Section scraper (`src/scrape_sections.js`)
    - Read `data/profiles.jsonl`, output per-section JSONLs:
-     - `data/portfolio.jsonl`, `data/work_history.jsonl`, `data/overviews.jsonl`, `data/accounts.jsonl`
+     - `data/portfolio.jsonl`, `data/work_history.jsonl`, `data/accounts.jsonl`
    - Network-first parsing with DOM fallbacks
-2) CLI config for search terms and MAX_PROFILES
-3) Input URL list mode
-4) Better logging and screenshots on failures
+2) Input URL list mode (bypass search, scrape specific profile URLs)
+3) Better anti-detection measures:
+   - Human-like mouse movements and scrolling
+   - Randomized timing patterns
+   - Session rotation strategies
+4) Enhanced logging and error screenshots
 
 ---
 
@@ -118,6 +155,9 @@ Partially Working / Next Up:
 - Browser: Persistent Google Chrome profile via Playwright
 - Storage: Local JSONL and CSV files in `data/`
 - No external scraping APIs or cloud services
+  
+Related tools
+- See `linkedin_finder/` for a minimal LinkedIn finder that enriches Upwork profiles with likely LinkedIn URLs via search APIs. It has its own README.
 
 Flow:
 1) You authenticate once using a real Chrome window (persistent profile). This saves your session locally.
@@ -169,12 +209,29 @@ Why Playwright + persistent Chrome?
 
 ### Troubleshooting
 
-- Stuck on "Verifying you are human":
-  - Use `npm run login:persistent` and complete the check in real Chrome
-  - Keep volumes tiny; navigate slowly; retry later if blocked
-- Empty fields:
-  - Profile content may be lazy-loaded; re-run `scrape:profiles` and consider increasing waits
-  - Network-first capture + scroll depth usually resolves this
+**Rate Limiting & Timeouts:**
+- **Symptoms**: Page timeouts, slow loading, "Timeout 90000ms exceeded" errors
+- **Cause**: Upwork's anti-bot detection flagging repeated automated requests
+- **Solutions**:
+  - Wait 2-4 hours between scraping sessions
+  - Keep volumes very small (1-3 profiles max per session)
+  - Refresh login session: `npm run login:persistent`
+  - Delete and recreate `chrome-user-data/` directory if sessions are persistently flagged
+
+**Stuck on "Verifying you are human":**
+- Use `npm run login:persistent` and complete the verification manually
+- Sessions may degrade over time - refresh periodically
+- Avoid rapid consecutive runs
+
+**Empty or Missing Fields (title, description):**
+- Modern extraction uses `h2.h4` selectors for titles and `.air3-line-clamp` for descriptions
+- If fields are null, the profile may use a different layout structure
+- Content may be lazy-loaded - the scraper includes scrolling and wait logic
+
+**General Best Practices:**
+- Space out scraping sessions by hours, not minutes
+- Keep total profiles per day under 10-15
+- Monitor for behavior changes in Upwork's anti-bot systems
 
 ---
 

@@ -2,11 +2,11 @@ import { chromium } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 
-const SEARCH_TERMS = [
+const DEFAULT_SEARCH_TERMS = [
   'market research'
 ];
 
-const MAX_PROFILES = 10; // increased to collect 7 more beyond the 3 we have
+const DEFAULT_MAX_PROFILES = 10; // default count; can be overridden by --max
 const OUTPUT_DIR = path.resolve(process.cwd(), 'data');
 const OUTPUT_FILE = path.join(OUTPUT_DIR, 'profiles.jsonl');
 
@@ -44,6 +44,41 @@ function parseHumanNumberToFloat(str) {
   if (suffix === 'k') n *= 1_000;
   if (suffix === 'm') n *= 1_000_000;
   return n;
+}
+
+// CLI args: --search="term1,term2" --search-file=terms.txt --max=10
+function parseArgs(argv = process.argv.slice(2)) {
+  const out = { searchTerms: [], searchFile: null, max: null };
+  for (const token of argv) {
+    const [rawKey, rawVal] = token.includes('=') ? token.split(/=(.*)/, 2) : [token, null];
+    const key = rawKey.replace(/^--/, '');
+    const val = rawVal ?? null;
+    if (key === 'search' || key === 's') {
+      if (val) {
+        const parts = val.split(',').map(v => v.trim()).filter(Boolean);
+        out.searchTerms.push(...parts);
+      }
+    } else if (key === 'search-file') {
+      if (val) out.searchFile = val;
+    } else if (key === 'max') {
+      const num = Number(val);
+      if (Number.isFinite(num) && num > 0) out.max = num;
+    }
+  }
+  return out;
+}
+
+function loadSearchTermsFromFile(p) {
+  try {
+    const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+    if (!fs.existsSync(abs)) return [];
+    return fs.readFileSync(abs, 'utf8')
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('#'));
+  } catch {
+    return [];
+  }
 }
 
 async function ensureOutput() {
@@ -103,7 +138,7 @@ async function gotoWithPacing(page, url) {
   await sleep(3000 + Math.floor(Math.random() * 4000));
 }
 
-async function extractProfile(page, url) {
+async function extractProfile(page, url, meta = {}) {
   // Guard: only process valid freelancer profile URLs
   if (!/^https?:\/\/www\.upwork\.com\/freelancers\/~[A-Za-z0-9]+/.test(url)) {
     return null;
@@ -114,7 +149,7 @@ async function extractProfile(page, url) {
     return null;
   }
   // Capture XHR/GraphQL responses for structured data (best-effort) BEFORE navigation
-  const networkData = { skills: [] };
+  const networkData = { skills: [], categories: [] };
   const seenResponses = new Set();
   function tryCollectFromObject(obj) {
     try {
@@ -126,9 +161,9 @@ async function extractProfile(page, url) {
         if (!networkData.name && typeof cur.name === 'string') networkData.name = cur.name;
         if (!networkData.name && typeof cur.fullName === 'string') networkData.name = cur.fullName;
         if (!networkData.name && typeof cur.displayName === 'string') networkData.name = cur.displayName;
-        // title/headline
-        if (!networkData.headline && typeof cur.title === 'string') networkData.headline = cur.title;
-        if (!networkData.headline && typeof cur.headline === 'string') networkData.headline = cur.headline;
+        // title
+        if (!networkData.title && typeof cur.title === 'string') networkData.title = cur.title;
+        if (!networkData.title && typeof cur.headline === 'string') networkData.title = cur.headline;
         // rate
         if (!networkData.rate && (typeof cur.hourlyRate === 'number' || typeof cur.hourlyRate === 'string')) networkData.rate = cur.hourlyRate;
         if (!networkData.rate && (typeof cur.rate === 'number' || typeof cur.rate === 'string')) networkData.rate = cur.rate;
@@ -254,14 +289,30 @@ async function extractProfile(page, url) {
     source: 'upwork',
     externalId,
     name: await text(['[data-qa="freelancer-name"]', '[data-test="profile-title"]', 'main h1', 'h1']),
-    headline: await text(['[data-qa="freelancer-title"]', '[data-test="title"]', '[data-test="profile-overview-title"]']),
+    title: await text(['h2.h4', '.air3-card-section h2', 'section h2.mb-0', 'h2.mb-0', '[data-qa="freelancer-title"]', '[data-test="title"]', '[data-test="profile-overview-title"]', '[data-qa="title"]', 'h1 + p', 'h1 + div:not([class*="location"]):not([class*="verified"])', 'h2[data-qa="title"]', 'h2[data-test="title"]', '[data-test="freelancer-subtitle"]']),
     rate: await text(['[data-test="rate"]', '[data-qa="rate"]', 'text=/\$\s*\d[\d,]*(?:\.\d+)?\s*\/\s*hr/i']),
     earnings: await text(['text=/Total (earned|earnings)/i', '[data-test="earnings"]', '[data-qa="earnings"]']),
     jobSuccess: await text(['text=/Job Success/i', '[data-test="job-success-score"]', '[data-qa="jss"]']),
     location: await text(['[data-test="location"]', '[data-qa="location"]']),
     skills: await allTexts('[data-test="skill-list"] li, [data-qa="skill"]'),
+    description: null, // Will be extracted later
+    searchQuery: typeof meta.searchQuery === 'string' ? meta.searchQuery : null,
     scrapedAt: new Date().toISOString()
   };
+
+  // Filter out location-based or invalid titles early
+  if (record.title) {
+    const invalidPatterns = [
+      /^verified\s+/i,
+      /^\w+,\s*\w+$/,  // City, State pattern
+      /^location/i,
+      /^view profile/i,
+      /^freelancer/i
+    ];
+    if (invalidPatterns.some(pattern => pattern.test(record.title))) {
+      record.title = null;
+    }
+  }
 
   // Meta-based fallbacks and label overrides
   const ogTitle = await getMeta('og:title', 'property') || await getMeta('twitter:title', 'name');
@@ -270,9 +321,9 @@ async function extractProfile(page, url) {
     if (/[A-Za-z]/.test(cleaned)) record.name = cleaned;
   }
   const ogDesc = await getMeta('og:description', 'property') || await getMeta('twitter:description', 'name');
-  if (!record.headline && ogDesc) {
-    const snippet = ogDesc.split('\n')[0].trim();
-    if (snippet && snippet.length <= 160) record.headline = snippet;
+  if (!record.title && ogDesc) {
+    const snippet = ogDesc.split('\n')[0].split(' - ')[0].split(' | ')[0].trim();
+    if (snippet && snippet.length >= 10 && snippet.length <= 160) record.title = snippet;
   }
 
   // Additional name fallback using document.title and token filter
@@ -344,6 +395,31 @@ async function extractProfile(page, url) {
         else if (jssInfo.aria) {
           const m = jssInfo.aria.match(/(\d{1,3})%/);
           if (m) record.jobSuccess = `${m[1]}%`;
+        }
+      }
+    } catch {}
+  }
+  
+  // Additional title extraction from page content patterns
+  if (!record.title) {
+    try {
+      // Look for title patterns in the main content
+      const titlePatterns = [
+        // Professional title after name
+        new RegExp(`${record.name?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\n]*([A-Z][A-Za-z\\s&|-]{10,80})`, 'i'),
+        // Common title patterns
+        /(?:I am|I'm)\s+a\s+([A-Z][A-Za-z\s&|-]{10,80})/i,
+        /Professional\s+([A-Z][A-Za-z\s&|-]{10,80})/i
+      ];
+      
+      for (const pattern of titlePatterns) {
+        const match = (mainText || bodyText).match(pattern);
+        if (match && match[1]) {
+          const candidate = match[1].trim();
+          if (candidate.length >= 10 && candidate.length <= 80) {
+            record.title = candidate;
+            break;
+          }
         }
       }
     } catch {}
@@ -468,21 +544,142 @@ async function extractProfile(page, url) {
     } catch {}
   }
 
-  // Categories: section-based parsing
+  // Description/Overview: section-based parsing
+  if (!record.description) {
+    try {
+      // Try to expand overview section if truncated
+      try {
+        const overviewHeading = page.locator('h2:has-text("Overview"), h3:has-text("Overview"), h2:has-text("About"), h3:has-text("About")').first();
+        if (await overviewHeading.count()) {
+          const sec = overviewHeading.locator('xpath=ancestor::*[self::section or self::div][1]');
+          const moreBtn = sec.locator('button:has-text("See more"), button:has-text("Show more"), button:has-text("Read more")');
+          if (await moreBtn.count()) {
+            await moreBtn.first().click({ timeout: 2000 }).catch(() => {});
+            await sleep(500);
+          }
+        }
+      } catch {}
+      
+      const desc = await page.evaluate(() => {
+        function text(el){return (el?.textContent||'').trim()}
+        
+        // Try new Upwork structure first - look for the line clamp description
+        const lineClampSpan = document.querySelector('.air3-line-clamp span.text-body.text-pre-line.break');
+        if (lineClampSpan) {
+          const descText = text(lineClampSpan);
+          if (descText.length > 50) return descText;
+        }
+        
+        // Fallback: look for description in air3-card-section
+        const cardSections = Array.from(document.querySelectorAll('.air3-card-section'));
+        for (const sec of cardSections) {
+          const textSpans = Array.from(sec.querySelectorAll('span.text-body, span.text-pre-line'));
+          for (const span of textSpans) {
+            const spanText = text(span);
+            if (spanText.length > 50 && !/(see more|show more|read more|edit|save)/i.test(spanText)) {
+              return spanText;
+            }
+          }
+        }
+        
+        // Original fallback for older structure
+        const sections = Array.from(document.querySelectorAll('section,div'));
+        for (const sec of sections) {
+          const heading = text(sec.querySelector('h2, h3'));
+          if (/^(overview|about|description)$/i.test(heading)) {
+            const textElements = Array.from(sec.querySelectorAll('p, div:not([class*="button"]):not([class*="btn"])'))
+              .filter(el => {
+                const t = text(el);
+                return t.length > 20 && !/(see more|show more|read more|edit|save)/i.test(t);
+              });
+            
+            if (textElements.length > 0) {
+              return textElements.map(el => text(el)).join('\n').trim();
+            }
+          }
+        }
+        return null;
+      });
+      
+      if (desc && desc.length > 10) record.description = desc;
+    } catch {}
+  }
+
+  // Fallback: Extract description from meta tags or main content
+  if (!record.description) {
+    const ogDesc = await getMeta('og:description', 'property');
+    if (ogDesc && ogDesc.length > 50) {
+      record.description = ogDesc;
+    }
+  }
+
+  // Extract professional title from first line of description
+  if (!record.title && record.description) {
+    try {
+      const firstLine = record.description.split('\n')[0].trim();
+      const sentences = firstLine.split(/[.!?]/).map(s => s.trim());
+      
+      // Look for professional titles in the first sentence
+      const professionalPatterns = [
+        // "I'm [name], a [title]" - matches your example: "I'm Sawyer Elizondo, a seasoned social media manager"
+        /i'm\s+[^,]+,\s+a\s+([a-z][a-z\s&|-]{8,80})/i,
+        // "I am [name], a [title]"
+        /i\s+am\s+[^,]+,\s+a\s+([a-z][a-z\s&|-]{8,80})/i,
+        // "I am a [title]" or "I'm a [title]"
+        /(?:i am|i'm)\s+a\s+([a-z][a-z\s&|-]{8,80})/i,
+        // Direct professional statements
+        /^([A-Z][A-Za-z\s&|-]{8,80})\s+(?:with|based|specializing)/i,
+        // Professional titles at start of sentence
+        /^([A-Z][A-Za-z\s&|-]{8,80})(?:\s*[.!,]|\s+and)/,
+        // Pattern like "Professional [title]"
+        /professional\s+([A-Za-z\s&|-]{8,80})/i,
+        // Pattern like "seasoned [title]", "experienced [title]"
+        /(?:seasoned|experienced|expert|skilled|professional)\s+([a-z][a-z\s&|-]{8,80})/i
+      ];
+      
+      for (const pattern of professionalPatterns) {
+        const match = firstLine.match(pattern);
+        if (match && match[1]) {
+          const candidate = match[1].trim();
+          // Validate it looks like a professional title
+          if (candidate.length >= 8 && candidate.length <= 60 && 
+              !/^(with|and|the|for|in|on|at|by|from)$/i.test(candidate)) {
+            record.title = candidate;
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Categories: section-based parsing with improved selectors
   if (!record.categories) {
     try {
       const cats = await page.evaluate(() => {
         function text(el){return (el?.textContent||'').trim()}
+        
+        // Look for category breadcrumbs or navigation elements
+        const breadcrumbs = Array.from(document.querySelectorAll('nav[aria-label*="breadcrumb" i] a, .breadcrumb a, [data-qa*="breadcrumb" i] a'))
+          .map(x => text(x)).filter(s => s.length >= 3 && s.length <= 60);
+        if (breadcrumbs.length) return breadcrumbs;
+        
+        // Look for category sections
         const sections = Array.from(document.querySelectorAll('section,div'));
         for (const sec of sections) {
           const heading = text(sec.querySelector('h2, h3'));
-          if (/^categories$/i.test(heading)) {
+          if (/^(categories?|specialization|expertise)$/i.test(heading)) {
             const chips = Array.from(sec.querySelectorAll('a, button, span')).map(x => text(x)).filter(Boolean);
-            const filtered = chips.filter(s => s.length >= 2 && s.length <= 60);
+            const filtered = chips.filter(s => s.length >= 3 && s.length <= 60);
             const uniq = Array.from(new Set(filtered));
             if (uniq.length) return uniq;
           }
         }
+        
+        // Look for category links anywhere on page
+        const categoryLinks = Array.from(document.querySelectorAll('a[href*="/o/profiles/categories/"], a[href*="/categories/"]'))
+          .map(x => text(x)).filter(s => s.length >= 3 && s.length <= 60);
+        if (categoryLinks.length) return Array.from(new Set(categoryLinks));
+        
         return [];
       });
       if (cats && cats.length) record.categories = cats;
@@ -491,7 +688,7 @@ async function extractProfile(page, url) {
 
   // Merge any network-derived values
   if (!record.name && networkData.name) record.name = String(networkData.name);
-  if (!record.headline && networkData.headline) record.headline = String(networkData.headline);
+  if (!record.title && networkData.title) record.title = String(networkData.title);
   if (!record.rate && networkData.rate) record.rate = String(networkData.rate).toString();
   if (!record.earnings && networkData.earnings) record.earnings = String(networkData.earnings).toString();
   if (!record.jobSuccess && networkData.jobSuccess) record.jobSuccess = String(networkData.jobSuccess).toString();
@@ -501,16 +698,32 @@ async function extractProfile(page, url) {
   if (record.skills.length === 0 && Array.isArray(networkData.skills) && networkData.skills.length > 0) {
     record.skills = Array.from(new Set(networkData.skills));
   }
+  if (!record.categories && Array.isArray(networkData.categories) && networkData.categories.length > 0) {
+    record.categories = Array.from(new Set(networkData.categories));
+  }
+  if (!record.primaryCategory && networkData.primaryCategory) record.primaryCategory = String(networkData.primaryCategory);
+  if (!record.secondaryCategory && networkData.secondaryCategory) record.secondaryCategory = String(networkData.secondaryCategory);
 
-  // Derive name if only headline captured a short name
-  if (!record.name && record.headline && /[A-Za-z]/.test(record.headline)) {
-    record.name = record.headline;
+  // Apply title filtering again after network data merge
+  if (record.title) {
+    const invalidPatterns = [
+      /^verified\s+/i,
+      /^\w+,\s*\w+$/,  // City, State pattern
+      /^location/i,
+      /^view profile/i,
+      /^freelancer/i
+    ];
+    if (invalidPatterns.some(pattern => pattern.test(record.title))) {
+      record.title = null;
+    }
   }
 
-  // Prevent headline=name duplicates
-  if (record.headline && record.name && record.headline === record.name) {
-    record.headline = null;
+  // Derive name if only title captured a short name
+  if (!record.name && record.title && /[A-Za-z]/.test(record.title)) {
+    record.name = record.title;
   }
+
+  // Keep title even if it matches name - title is the professional headline
 
   // Additional DOM-based collections for skills (broader fallback)
   try {
@@ -541,6 +754,26 @@ async function extractProfile(page, url) {
   try {
     const domCategories = await page.$$eval('a[href*="/o/profiles/categories/"]', as => Array.from(new Set(as.map(a => (a.textContent || '').trim()).filter(Boolean))));
     if (domCategories.length) record.categories = domCategories;
+  } catch {}
+
+  // Heuristic for primary/secondary category using visible text
+  try {
+    const TOP_LEVEL = [
+      'Development & IT','Web, Mobile & Software Dev','Design & Creative','Sales & Marketing','Writing & Translation','Admin Support','Finance & Accounting','Engineering & Architecture','Legal','Customer Service','HR & Training','Data Science & Analytics'
+    ];
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tlc = TOP_LEVEL.map(esc).join('|');
+    const re = new RegExp(`(${tlc})\\s*[–—\-]>?\\s*([A-Za-z0-9&/ +]{3,60})`, 'i');
+    let m = (mainText || bodyText || '').match(re);
+    if (!m) {
+      const re2 = new RegExp(`(${tlc})`, 'i');
+      m = (mainText || bodyText || '').match(re2);
+      if (m) record.primaryCategory = record.primaryCategory || m[1];
+    }
+    if (m) {
+      record.primaryCategory = record.primaryCategory || m[1];
+      if (m[2]) record.secondaryCategory = record.secondaryCategory || m[2].trim();
+    }
   } catch {}
 
   // Badges
@@ -610,7 +843,16 @@ async function main() {
   });
   const page = await context.newPage();
 
-  // Seed collected with previously scraped profile URLs so we add 7 more up to MAX_PROFILES
+  // Resolve CLI params
+  const argv = parseArgs();
+  const fromFile = argv.searchFile ? loadSearchTermsFromFile(argv.searchFile) : [];
+  let terms = [...fromFile, ...argv.searchTerms];
+  if (terms.length === 0) terms = DEFAULT_SEARCH_TERMS;
+  const seen = new Set();
+  const SEARCH_TERMS = terms.filter(t => { const k = t.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  const MAX_PROFILES = argv.max ?? DEFAULT_MAX_PROFILES;
+
+  // Seed collected with previously scraped profile URLs so we add more up to MAX_PROFILES
   const collected = loadExistingProfileUrls();
 
   for (const term of SEARCH_TERMS) {
@@ -648,7 +890,7 @@ async function main() {
       if (collected.size >= MAX_PROFILES) break;
       if (collected.has(link)) continue;
       try {
-        const rec = await extractProfile(page, link);
+        const rec = await extractProfile(page, link, { searchQuery: term });
         if (rec) {
           writeJsonl(rec);
           collected.add(link);
