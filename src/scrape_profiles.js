@@ -46,9 +46,27 @@ function parseHumanNumberToFloat(str) {
   return n;
 }
 
+function sanitizeExternalUrl(raw) {
+  if (!raw || raw === 'javascript:') return null;
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    url.search = '';
+    return url.toString();
+  } catch {}
+  try {
+    const url = new URL(raw, 'https://www.upwork.com');
+    if (!/^https?:/i.test(url.protocol)) return null;
+    url.hash = '';
+    url.search = '';
+    return url.toString();
+  } catch {}
+  return null;
+}
+
 // CLI args: --search="term1,term2" --search-file=terms.txt --max=10
 function parseArgs(argv = process.argv.slice(2)) {
-  const out = { searchTerms: [], searchFile: null, max: null, urls: [] };
+  const out = { searchTerms: [], searchFile: null, max: null, urls: [], urlsFile: null, urlsColumn: null };
   for (const token of argv) {
     const [rawKey, rawVal] = token.includes('=') ? token.split(/=(.*)/, 2) : [token, null];
     const key = rawKey.replace(/^--/, '');
@@ -68,6 +86,10 @@ function parseArgs(argv = process.argv.slice(2)) {
         const parts = val.split(',').map(v => v.trim()).filter(Boolean);
         out.urls.push(...parts);
       }
+    } else if (key === 'urls-file' || key === 'urlsfile') {
+      if (val) out.urlsFile = val.trim();
+    } else if (key === 'urls-column' || key === 'urlscolumn') {
+      if (val) out.urlsColumn = val.trim();
     }
   }
   return out;
@@ -82,6 +104,65 @@ function loadSearchTermsFromFile(p) {
       .map(l => l.trim())
       .filter(l => l && !l.startsWith('#'));
   } catch {
+    return [];
+  }
+}
+
+function parseCsvLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+  return result.map(v => v.trim());
+}
+
+function loadProfileUrlsFromCsv(filePath, columnName = 'url') {
+  try {
+    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+    if (!fs.existsSync(abs)) {
+      console.warn(`URLs file not found: ${filePath}`);
+      return [];
+    }
+    const rows = fs.readFileSync(abs, 'utf8')
+      .split(/\r?\n/)
+      .filter(line => line.trim().length > 0);
+    if (rows.length === 0) return [];
+
+    const headerCells = parseCsvLine(rows[0]);
+    const lowerHeader = headerCells.map(h => h.toLowerCase());
+    const targetColumn = columnName ? columnName.toLowerCase() : 'url';
+    let columnIndex = lowerHeader.indexOf(targetColumn);
+    if (columnIndex === -1) {
+      console.warn(`Column "${columnName}" not found in ${filePath}. Using first column.`);
+      columnIndex = 0;
+    }
+
+    const urls = [];
+    for (let i = 1; i < rows.length; i++) {
+      const cells = parseCsvLine(rows[i]);
+      if (columnIndex >= cells.length) continue;
+      const cell = cells[columnIndex]?.trim();
+      if (cell) urls.push(cell);
+    }
+    return urls;
+  } catch (err) {
+    console.warn('Unable to load URLs from CSV:', err?.message || err);
     return [];
   }
 }
@@ -125,10 +206,11 @@ async function collectProfileLinksFromSearch(page) {
   return Array.from(new Set(links));
 }
 
-async function maybeWaitForHumanCheck(page) {
+async function maybeWaitForHumanCheck(page, metrics) {
   try {
     const found = await page.locator('text=Verifying You Are Human,Verifying you are human').first().isVisible({ timeout: 2000 }).catch(() => false);
     if (found) {
+      if (metrics) metrics.humanVerificationPrompts = (metrics.humanVerificationPrompts ?? 0) + 1;
       console.log('Human verification detected. Please complete the verification in the opened browser...');
       // Wait until the text is gone
       await page.waitForFunction(() => !document.body.innerText.match(/Verifying you are human/i), { timeout: 10 * 60 * 1000 });
@@ -137,13 +219,21 @@ async function maybeWaitForHumanCheck(page) {
   } catch {}
 }
 
-async function gotoWithPacing(page, url) {
+async function gotoWithPacing(page, url, metrics) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
-  await maybeWaitForHumanCheck(page);
+  await maybeWaitForHumanCheck(page, metrics);
+  try {
+    const challengeVisible = await page.locator('text=/Just a moment/i').first().isVisible({ timeout: 0 }).catch(() => false);
+    if (challengeVisible) {
+      if (metrics) metrics.botChallengeDetections = (metrics.botChallengeDetections ?? 0) + 1;
+      console.warn('Bot challenge detected ("Just a moment..."). Backing off for 60 seconds.');
+      await sleep(60_000);
+    }
+  } catch {}
   await sleep(3000 + Math.floor(Math.random() * 4000));
 }
 
-async function extractProfile(page, url, meta = {}) {
+async function extractProfile(page, url, meta = {}, metrics) {
   // Guard: only process valid freelancer profile URLs
   if (!/^https?:\/\/www\.upwork\.com\/freelancers\/~[A-Za-z0-9]+/.test(url)) {
     return null;
@@ -218,7 +308,7 @@ async function extractProfile(page, url, meta = {}) {
   };
   page.on('response', onResponse);
 
-  await gotoWithPacing(page, url);
+  await gotoWithPacing(page, url, metrics);
   try { await page.waitForLoadState('networkidle', { timeout: 20000 }); } catch {}
   // Gentle scroll to trigger lazy content
   for (let i = 0; i < 2; i++) {
@@ -754,7 +844,13 @@ async function extractProfile(page, url, meta = {}) {
           const item = { platform: acc.platform };
           if (acc.username) item.username = acc.username;
           if (acc.avatarUrl) item.avatarUrl = acc.avatarUrl;
-          if (acc.profileHref && acc.profileHref !== 'javascript:') item.profileUrl = acc.profileHref;
+          const sanitized = sanitizeExternalUrl(acc.profileHref);
+          if (sanitized) {
+            item.profileUrl = sanitized;
+            try {
+              item.profileHost = new URL(sanitized).hostname;
+            } catch {}
+          }
           if (acc.since) {
             const cleaned = acc.since.replace(/\s+/g, ' ').trim();
             item.since = cleaned;
@@ -784,11 +880,16 @@ async function extractProfile(page, url, meta = {}) {
           await linkLocator.first().click({ timeout: 2000 }).catch(() => {});
           const popup = await popupPromise;
           if (popup) {
+            if (metrics) metrics.popupResolves = (metrics.popupResolves ?? 0) + 1;
             try {
               await popup.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
               const popupUrl = popup.url();
-              if (/^https?:\/\//i.test(popupUrl) && popupUrl !== 'about:blank') {
-                record.linkedAccounts[i].profileUrl = popupUrl;
+              const sanitized = sanitizeExternalUrl(popupUrl);
+              if (sanitized) {
+                record.linkedAccounts[i].profileUrl = sanitized;
+                try {
+                  record.linkedAccounts[i].profileHost = new URL(sanitized).hostname;
+                } catch {}
               }
             } finally {
               await popup.close().catch(() => {});
@@ -936,9 +1037,16 @@ async function extractProfile(page, url, meta = {}) {
   }
 
   // Cleanup: remove raw fields after parsing
+  if (metrics) {
+    const count = Array.isArray(record.linkedAccounts) ? record.linkedAccounts.length : 0;
+    if (count === 0) metrics.profilesWithoutLinkedAccounts = (metrics.profilesWithoutLinkedAccounts ?? 0) + 1;
+  }
+
   if (record.rate) delete record.rate;
   if (record.earnings) delete record.earnings;
   if (record.jobSuccess) delete record.jobSuccess;
+  if (Object.prototype.hasOwnProperty.call(record, 'skills')) delete record.skills;
+  if (Object.prototype.hasOwnProperty.call(record, 'description')) delete record.description;
   if (Array.isArray(record.linkedAccounts) && record.linkedAccounts.length === 0) delete record.linkedAccounts;
 
   page.off('response', onResponse);
@@ -961,16 +1069,23 @@ async function main() {
   // Resolve CLI params
   const argv = parseArgs();
   const fromFile = argv.searchFile ? loadSearchTermsFromFile(argv.searchFile) : [];
-  let terms = [...fromFile, ...argv.searchTerms];
   const urlsFromArgs = argv.urls ?? [];
-  if (terms.length === 0 && urlsFromArgs.length === 0) terms = DEFAULT_SEARCH_TERMS;
-  const seen = new Set();
-  const SEARCH_TERMS = terms.filter(t => { const k = t.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  let rawTerms = [...fromFile, ...argv.searchTerms];
   const MAX_PROFILES = argv.max ?? DEFAULT_MAX_PROFILES;
   let addedThisRun = 0;
 
   // Seed collected with previously scraped profile URLs so we add more up to MAX_PROFILES
   const collected = loadExistingProfileUrls();
+
+  const metrics = {
+    totalProfiles: 0,
+    profilesWithoutLinkedAccounts: 0,
+    popupResolves: 0,
+    humanVerificationPrompts: 0,
+    botChallengeDetections: 0,
+    navigationTimeouts: 0,
+    errors: 0
+  };
 
   const normalizeProfileUrl = (u) => {
     try {
@@ -983,84 +1098,130 @@ async function main() {
     }
   };
 
-  const directUrls = Array.from(new Set((argv.urls || []).map(normalizeProfileUrl).filter(Boolean)));
+  let urlsFromCsv = [];
+  if (argv.urlsFile) {
+    urlsFromCsv = loadProfileUrlsFromCsv(argv.urlsFile, argv.urlsColumn || 'url');
+    console.log(`Loaded ${urlsFromCsv.length} URLs from ${argv.urlsFile}`);
+  }
+
+  const directUrlsRaw = [...(argv.urls || []), ...urlsFromCsv];
+  const directUrls = Array.from(new Set(directUrlsRaw
+    .map(normalizeProfileUrl)
+    .filter(Boolean)
+    .map(u => u.split('?')[0].split('#')[0])
+  ));
+
+  if (directUrls.length > 0) {
+    console.log(`Prepared ${directUrls.length} direct profile URLs.`);
+  }
+
+  if (rawTerms.length === 0 && directUrls.length === 0) rawTerms = DEFAULT_SEARCH_TERMS;
+
+  const seen = new Set();
+  const SEARCH_TERMS = rawTerms.filter(t => { const k = t.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
 
   for (const url of directUrls) {
     if (addedThisRun >= MAX_PROFILES) break;
     if (collected.has(url)) continue;
     try {
-      const rec = await extractProfile(page, url, {});
+      const rec = await extractProfile(page, url, {}, metrics);
       if (rec) {
         writeJsonl(rec);
         collected.add(url);
         console.log(`Scraped ${collected.size}/${MAX_PROFILES}: ${url}`);
         await sleep(2000 + Math.floor(Math.random() * 3000));
         addedThisRun += 1;
+        metrics.totalProfiles += 1;
       }
     } catch (e) {
+      metrics.errors += 1;
+      if ((e?.message || '').toLowerCase().includes('timeout')) {
+        metrics.navigationTimeouts += 1;
+        console.warn('Timeout encountered. Backing off for 60 seconds.');
+        await sleep(60_000);
+      }
       console.warn('Error on direct profile, capturing screenshot and continuing...', e?.message || e);
       await page.screenshot({ path: path.join(OUTPUT_DIR, `error_${Date.now()}.png`) });
     }
   }
 
-  if (addedThisRun >= MAX_PROFILES) {
-    await context.close();
-    return;
-  }
-
-  if (SEARCH_TERMS.length === 0) {
-    await context.close();
-    return;
-  }
-
-  for (const term of SEARCH_TERMS) {
-    if (addedThisRun >= MAX_PROFILES) break;
-    const encoded = encodeURIComponent(term);
-    const urlsToTry = [
-      `https://www.upwork.com/nx/search/talent/?q=${encoded}`,
-      `https://www.upwork.com/search/profiles/?q=${encoded}`
-    ];
-
-    let links = [];
-    for (const searchUrl of urlsToTry) {
-      console.log('Navigating to search:', searchUrl);
-      await gotoWithPacing(page, searchUrl);
-
-      // Attempt to scroll to load more results
-      for (let i = 0; i < 3; i++) {
-        await page.mouse.wheel(0, 1200);
-        await sleep(1500 + Math.floor(Math.random() * 1500));
-      }
-
-      links = await collectProfileLinksFromSearch(page);
-      // Filter only true profile URLs and normalize by stripping query/hash
-      links = links
-        .filter(h => /^https?:\/\/www\.upwork\.com\/freelancers\/~[A-Za-z0-9]+/.test(h))
-        .map(h => h.split('?')[0].split('#')[0]);
-      console.log(`Found ${links.length} candidate profile links on this page.`);
-      if (links.length > 0) break;
-
-      // Screenshot if empty
-      await page.screenshot({ path: path.join(OUTPUT_DIR, `search_empty_${Date.now()}.png`), fullPage: true });
-    }
-
-    for (const link of links) {
+  if (addedThisRun < MAX_PROFILES && SEARCH_TERMS.length > 0) {
+    for (const term of SEARCH_TERMS) {
       if (addedThisRun >= MAX_PROFILES) break;
-      if (collected.has(link)) continue;
-      try {
-        const rec = await extractProfile(page, link, { searchQuery: term });
-        if (rec) {
-          writeJsonl(rec);
-          collected.add(link);
-          console.log(`Scraped ${collected.size}/${MAX_PROFILES}: ${link}`);
-          await sleep(2000 + Math.floor(Math.random() * 3000));
-          addedThisRun += 1;
+      const encoded = encodeURIComponent(term);
+      const urlsToTry = [
+        `https://www.upwork.com/nx/search/talent/?q=${encoded}`,
+        `https://www.upwork.com/search/profiles/?q=${encoded}`
+      ];
+
+      let links = [];
+      for (const searchUrl of urlsToTry) {
+        console.log('Navigating to search:', searchUrl);
+        await gotoWithPacing(page, searchUrl, metrics);
+
+        // Attempt to scroll to load more results
+        for (let i = 0; i < 3; i++) {
+          await page.mouse.wheel(0, 1200);
+          await sleep(1500 + Math.floor(Math.random() * 1500));
         }
-      } catch (e) {
-        console.warn('Error on profile, capturing screenshot and continuing...', e?.message || e);
-        await page.screenshot({ path: path.join(OUTPUT_DIR, `error_${Date.now()}.png`) });
+
+        links = await collectProfileLinksFromSearch(page);
+        // Filter only true profile URLs and normalize by stripping query/hash
+        links = links
+          .filter(h => /^https?:\/\/www\.upwork\.com\/freelancers\/(~[A-Za-z0-9]+|[A-Za-z0-9][A-Za-z0-9-_]+)$/i.test(h.split('?')[0].split('#')[0]))
+          .map(h => h.split('?')[0].split('#')[0]);
+        console.log(`Found ${links.length} candidate profile links on this page.`);
+        if (links.length > 0) break;
+
+        // Screenshot if empty
+        await page.screenshot({ path: path.join(OUTPUT_DIR, `search_empty_${Date.now()}.png`), fullPage: true });
+      }
+
+      for (const link of links) {
+        if (addedThisRun >= MAX_PROFILES) break;
+        if (collected.has(link)) continue;
+        try {
+          const rec = await extractProfile(page, link, { searchQuery: term }, metrics);
+          if (rec) {
+            writeJsonl(rec);
+            collected.add(link);
+            console.log(`Scraped ${collected.size}/${MAX_PROFILES}: ${link}`);
+            await sleep(2000 + Math.floor(Math.random() * 3000));
+            addedThisRun += 1;
+            metrics.totalProfiles += 1;
+          }
+        } catch (e) {
+          metrics.errors += 1;
+          if ((e?.message || '').toLowerCase().includes('timeout')) {
+            metrics.navigationTimeouts += 1;
+            console.warn('Timeout encountered. Backing off for 60 seconds.');
+            await sleep(60_000);
+          }
+          console.warn('Error on profile, capturing screenshot and continuing...', e?.message || e);
+          await page.screenshot({ path: path.join(OUTPUT_DIR, `error_${Date.now()}.png`) });
+        }
       }
     }
+  }
+
+  console.log('Scrape summary:', {
+    totalProfiles: metrics.totalProfiles,
+    profilesWithoutLinkedAccounts: metrics.profilesWithoutLinkedAccounts,
+    popupResolves: metrics.popupResolves,
+    humanVerificationPrompts: metrics.humanVerificationPrompts,
+    botChallengeDetections: metrics.botChallengeDetections,
+    navigationTimeouts: metrics.navigationTimeouts,
+    errors: metrics.errors
+  });
+
+  try {
+    const metricsRecord = {
+      ...metrics,
+      runEndedAt: new Date().toISOString()
+    };
+    fs.appendFileSync(path.join(OUTPUT_DIR, 'run_metrics.jsonl'), JSON.stringify(metricsRecord) + '\n');
+  } catch (e) {
+    console.warn('Unable to record run metrics:', e?.message || e);
   }
 
   await context.close();

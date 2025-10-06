@@ -52,6 +52,9 @@ npm run scrape:profiles -- --max=5
 
 # Scrape specific profile URLs (comma-separated)
 npm run scrape:profiles -- --urls=https://www.upwork.com/freelancers/~01abc...,https://www.upwork.com/freelancers/~01def...
+
+# Scrape profile URLs from a CSV (column defaults to "url")
+npm run scrape:profiles -- --urls-file=data/profiles_to_scrape.csv --urls-column=profile_url
 ```
 
 4) Scrape your own profile (optional)
@@ -69,9 +72,9 @@ Notes:
 
 ### Scripts
 - `npm run login:persistent` — Launch Chrome with a persistent profile and save session.
-- `npm run scrape:profiles` — Discover freelancer profiles, deduping across runs, or target specific URLs. Supports `--search`, `--search-file`, `--max`, and `--urls`.
+- `npm run scrape:profiles` — Discover freelancer profiles, deduping across runs, or target specific URLs. Supports `--search`, `--search-file`, `--max`, `--urls`, and `--urls-file`.
 - `npm run scrape:myprofile` — Extract your own profile using the saved session.
-- `npm run export:csv` — Convert `data/profiles.jsonl` to `data/profiles.csv`.
+- `npm run export:csv` — Convert `data/profiles.jsonl` to `data/profiles.csv`. Supports `--source-file=...` and `--key-column=...` to merge linked-account columns back into an input CSV.
 
 ---
 
@@ -122,10 +125,11 @@ Working:
 - Title fallback extraction from first line of profile descriptions
 - Normalized core fields: `hourlyRate`, `currency`, `earningsTotal`, `jobSuccessScore`
 - CSV exporter computes `$xx.xx/hr`, `$X,XXX`, and `JSS%` for quick viewing
-- Full CLI support: `--search`, `--search-file`, `--max`, `--urls` flags
+- Full CLI support: `--search`, `--search-file`, `--max`, `--urls`, `--urls-file` flags
 - Search query tracking per profile
 - Category detection (basic - primary/secondary when available)
-- Linked accounts extraction with resolved external profile URLs (GitHub, StackOverflow, etc.)
+- Linked accounts extraction with resolved external profile URLs (GitHub, StackOverflow, etc.), surfaced in CSV via `npm run export:csv -- --source-file=...`
+- Run metrics logging (`data/run_metrics.jsonl`) to track linked-account coverage, popup matches, and throttling signals
 
 Known Limitations:
 - **Rate limiting**: Upwork implements anti-bot measures. Keep volumes small (1-5 profiles per session) and space out runs by hours to avoid timeouts
@@ -168,6 +172,23 @@ Flow:
 2) Discovery visits Upwork Talent Search (e.g., "market research") to collect freelancer profile URLs.
 3) For each profile URL, the scraper opens the page with slow, human-like pacing, waits for content, and extracts key fields.
 4) Results are written incrementally to `data/profiles.jsonl` (deduped across runs) and can be exported to CSV.
+
+### Linked-Accounts Workflow (recommended)
+
+1. Prepare a CSV with at least one column containing Upwork profile URLs (`/freelancers/~…` or vanity IDs). Keep other columns intact; they’ll flow through the exporter untouched.
+2. Scrape with:
+   ```bash
+   npm run scrape:profiles -- --urls-file=path/to/your.csv --urls-column=profile_url --max=25
+   ```
+   - Use batches of ~20–30 URLs and pause 5–10 minutes between runs; longer breaks (even an hour) help if metrics show throttling.
+   - Monitor the console summary. Increases in `humanVerificationPrompts`, `botChallengeDetections`, or `navigationTimeouts` mean you should stop, clear the challenge (if any), and resume later.
+   - `data/run_metrics.jsonl` records each batch; keep it for historical logs or prune it between runs.
+3. After scraping, merge linked-account columns back into the CSV:
+   ```bash
+   npm run export:csv -- --source-file=path/to/your.csv --key-column=profile_url
+   ```
+   The tool copies every original column, then appends `linked_account_{n}_platform/username/profile_url/profile_host` based on what was found.
+4. Re-run the same commands safely—dedupe logic skips already-seen URLs, so you can resume after breaks without duplicating entries.
 
 Why Playwright + persistent Chrome?
 - Realistic browser fingerprint and behavior reduces human-verification loops.
