@@ -190,6 +190,15 @@ Flow:
    The tool copies every original column, then appends `linked_account_{n}_platform/username/profile_url/profile_host` based on what was found.
 4. Re-run the same commands safely—dedupe logic skips already-seen URLs, so you can resume after breaks without duplicating entries.
 
+### Suggested Improvements & Hygiene
+
+- **Chunked batches**: keep runs to ~20–30 URLs, pause 5–10 minutes (longer if metrics show throttling). Consider automating batch intervals in a shell script.
+- **Challenge handling**: watch for `humanVerificationPrompts`/`botChallengeDetections` in the summary. Stop, complete the Upwork challenge manually, and rerun the batch.
+- **URL normalization**: where possible convert vanity URLs to their canonical `~/UID` form; the scraper handles both but canonical URLs keep datasets consistent.
+- **Retry policy**: consider adding optional retry/backoff logic around `extractProfile` so transient navigation errors don’t lose a URL completely.
+- **Raw logs**: capture console output (e.g., `tee logs/scrape_$(date +%F_%H%M).log`) or inspect `data/run_metrics.jsonl` after each run to monitor health over time.
+- **Testing & fixtures**: add unit tests around CSV parsing and linked-account extraction, and keep fixture HTML snapshots for rapid regression testing when Upwork tweaks markup.
+
 Why Playwright + persistent Chrome?
 - Realistic browser fingerprint and behavior reduces human-verification loops.
 - Simple, readable code with good control over waits, scrolling, and events.
