@@ -48,7 +48,7 @@ function parseHumanNumberToFloat(str) {
 
 // CLI args: --search="term1,term2" --search-file=terms.txt --max=10
 function parseArgs(argv = process.argv.slice(2)) {
-  const out = { searchTerms: [], searchFile: null, max: null };
+  const out = { searchTerms: [], searchFile: null, max: null, urls: [] };
   for (const token of argv) {
     const [rawKey, rawVal] = token.includes('=') ? token.split(/=(.*)/, 2) : [token, null];
     const key = rawKey.replace(/^--/, '');
@@ -63,6 +63,11 @@ function parseArgs(argv = process.argv.slice(2)) {
     } else if (key === 'max') {
       const num = Number(val);
       if (Number.isFinite(num) && num > 0) out.max = num;
+    } else if (key === 'url' || key === 'urls') {
+      if (val) {
+        const parts = val.split(',').map(v => v.trim()).filter(Boolean);
+        out.urls.push(...parts);
+      }
     }
   }
   return out;
@@ -297,7 +302,8 @@ async function extractProfile(page, url, meta = {}) {
     skills: await allTexts('[data-test="skill-list"] li, [data-qa="skill"]'),
     description: null, // Will be extracted later
     searchQuery: typeof meta.searchQuery === 'string' ? meta.searchQuery : null,
-    scrapedAt: new Date().toISOString()
+    scrapedAt: new Date().toISOString(),
+    linkedAccounts: []
   };
 
   // Filter out location-based or invalid titles early
@@ -686,6 +692,114 @@ async function extractProfile(page, url, meta = {}) {
     } catch {}
   }
 
+  // Linked accounts section
+  if (record.linkedAccounts.length === 0) {
+    try {
+      // Expand section if collapsed
+      try {
+        const heading = page.locator('h2:has-text("Linked accounts"), h3:has-text("Linked accounts"), h5:has-text("Linked accounts")').first();
+        if (await heading.count()) {
+          const section = heading.locator('xpath=ancestor::*[self::section or self::div][1]');
+          const expandBtn = section.locator('button:has-text("Show more"), button:has-text("See more"), button:has-text("View more")');
+          if (await expandBtn.count()) {
+            await expandBtn.first().click({ timeout: 2000 }).catch(() => {});
+            await sleep(300);
+          }
+        }
+      } catch {}
+
+      try {
+        const section = page.locator('[data-qa="linked-accounts"]');
+        if (await section.count()) {
+          await section.scrollIntoViewIfNeeded().catch(() => {});
+          await page.waitForTimeout(500);
+        }
+      } catch {}
+
+      const domLinkedAccounts = await page.evaluate(() => {
+        function cleanText(el) {
+          return (el?.textContent || '').replace(/\s+/g, ' ').trim();
+        }
+
+        const container = document.querySelector('[data-qa="linked-accounts"]');
+        if (!container) return [];
+
+        const titles = Array.from(container.querySelectorAll('.title'));
+        const seen = new Set();
+        const cards = [];
+        for (const title of titles) {
+          let card = title.closest('div');
+          while (card && card !== container) {
+            if (card.querySelector && card.querySelector('.view-profile a')) break;
+            card = card.parentElement;
+          }
+          if (!card || card === container || seen.has(card)) continue;
+          seen.add(card);
+
+          const platform = cleanText(card.querySelector('.title')) || null;
+          if (!platform) continue;
+          const since = cleanText(card.querySelector('.since')) || null;
+          const username = cleanText(card.querySelector('.username')) || null;
+          const avatarUrl = card.querySelector('.avatar img')?.getAttribute('src') || null;
+          const profileHref = card.querySelector('.view-profile a')?.getAttribute('href') || null;
+          const followersRaw = cleanText(card.querySelector('.followers')) || null;
+
+          cards.push({ platform, since, username, avatarUrl, profileHref, followersRaw });
+        }
+        return cards;
+      });
+
+      if (domLinkedAccounts.length) {
+        record.linkedAccounts = domLinkedAccounts.map((acc) => {
+          const item = { platform: acc.platform };
+          if (acc.username) item.username = acc.username;
+          if (acc.avatarUrl) item.avatarUrl = acc.avatarUrl;
+          if (acc.profileHref && acc.profileHref !== 'javascript:') item.profileUrl = acc.profileHref;
+          if (acc.since) {
+            const cleaned = acc.since.replace(/\s+/g, ' ').trim();
+            item.since = cleaned;
+            const year = cleaned.match(/(19|20)\d{2}/);
+            if (year) item.sinceYear = Number(year[0]);
+          }
+          if (acc.followersRaw) {
+            const cleanedFollowers = acc.followersRaw;
+            item.followers = cleanedFollowers;
+            const numeric = parseHumanNumberToFloat(cleanedFollowers);
+            if (numeric !== null) item.followersCount = numeric;
+          }
+          return item;
+        });
+      }
+    } catch {}
+
+    if (Array.isArray(record.linkedAccounts) && record.linkedAccounts.some(acc => !acc.profileUrl)) {
+      try {
+        const cardsLocator = page.locator('[data-qa="linked-accounts"] .view-profile');
+        const cardCount = await cardsLocator.count();
+        for (let i = 0; i < cardCount && i < record.linkedAccounts.length; i++) {
+          if (record.linkedAccounts[i]?.profileUrl) continue;
+          const linkLocator = cardsLocator.nth(i).locator('a');
+          if (!(await linkLocator.count())) continue;
+          const popupPromise = page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);
+          await linkLocator.first().click({ timeout: 2000 }).catch(() => {});
+          const popup = await popupPromise;
+          if (popup) {
+            try {
+              await popup.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+              const popupUrl = popup.url();
+              if (/^https?:\/\//i.test(popupUrl) && popupUrl !== 'about:blank') {
+                record.linkedAccounts[i].profileUrl = popupUrl;
+              }
+            } finally {
+              await popup.close().catch(() => {});
+            }
+            await sleep(350);
+          }
+        }
+      } catch {}
+    }
+  }
+
   // Merge any network-derived values
   if (!record.name && networkData.name) record.name = String(networkData.name);
   if (!record.title && networkData.title) record.title = String(networkData.title);
@@ -825,6 +939,7 @@ async function extractProfile(page, url, meta = {}) {
   if (record.rate) delete record.rate;
   if (record.earnings) delete record.earnings;
   if (record.jobSuccess) delete record.jobSuccess;
+  if (Array.isArray(record.linkedAccounts) && record.linkedAccounts.length === 0) delete record.linkedAccounts;
 
   page.off('response', onResponse);
 
@@ -847,16 +962,59 @@ async function main() {
   const argv = parseArgs();
   const fromFile = argv.searchFile ? loadSearchTermsFromFile(argv.searchFile) : [];
   let terms = [...fromFile, ...argv.searchTerms];
-  if (terms.length === 0) terms = DEFAULT_SEARCH_TERMS;
+  const urlsFromArgs = argv.urls ?? [];
+  if (terms.length === 0 && urlsFromArgs.length === 0) terms = DEFAULT_SEARCH_TERMS;
   const seen = new Set();
   const SEARCH_TERMS = terms.filter(t => { const k = t.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
   const MAX_PROFILES = argv.max ?? DEFAULT_MAX_PROFILES;
+  let addedThisRun = 0;
 
   // Seed collected with previously scraped profile URLs so we add more up to MAX_PROFILES
   const collected = loadExistingProfileUrls();
 
+  const normalizeProfileUrl = (u) => {
+    try {
+      const urlObj = new URL(u, 'https://www.upwork.com');
+      const href = urlObj.toString();
+      if (!/^https?:\/\/www\.upwork\.com\/freelancers\/~[A-Za-z0-9]+/.test(href)) return null;
+      return href.split('?')[0].split('#')[0];
+    } catch {
+      return null;
+    }
+  };
+
+  const directUrls = Array.from(new Set((argv.urls || []).map(normalizeProfileUrl).filter(Boolean)));
+
+  for (const url of directUrls) {
+    if (addedThisRun >= MAX_PROFILES) break;
+    if (collected.has(url)) continue;
+    try {
+      const rec = await extractProfile(page, url, {});
+      if (rec) {
+        writeJsonl(rec);
+        collected.add(url);
+        console.log(`Scraped ${collected.size}/${MAX_PROFILES}: ${url}`);
+        await sleep(2000 + Math.floor(Math.random() * 3000));
+        addedThisRun += 1;
+      }
+    } catch (e) {
+      console.warn('Error on direct profile, capturing screenshot and continuing...', e?.message || e);
+      await page.screenshot({ path: path.join(OUTPUT_DIR, `error_${Date.now()}.png`) });
+    }
+  }
+
+  if (addedThisRun >= MAX_PROFILES) {
+    await context.close();
+    return;
+  }
+
+  if (SEARCH_TERMS.length === 0) {
+    await context.close();
+    return;
+  }
+
   for (const term of SEARCH_TERMS) {
-    if (collected.size >= MAX_PROFILES) break;
+    if (addedThisRun >= MAX_PROFILES) break;
     const encoded = encodeURIComponent(term);
     const urlsToTry = [
       `https://www.upwork.com/nx/search/talent/?q=${encoded}`,
@@ -887,7 +1045,7 @@ async function main() {
     }
 
     for (const link of links) {
-      if (collected.size >= MAX_PROFILES) break;
+      if (addedThisRun >= MAX_PROFILES) break;
       if (collected.has(link)) continue;
       try {
         const rec = await extractProfile(page, link, { searchQuery: term });
@@ -896,6 +1054,7 @@ async function main() {
           collected.add(link);
           console.log(`Scraped ${collected.size}/${MAX_PROFILES}: ${link}`);
           await sleep(2000 + Math.floor(Math.random() * 3000));
+          addedThisRun += 1;
         }
       } catch (e) {
         console.warn('Error on profile, capturing screenshot and continuing...', e?.message || e);
@@ -911,5 +1070,3 @@ main().catch(async (err) => {
   console.error(err);
   process.exit(1);
 });
-
-

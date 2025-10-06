@@ -49,6 +49,9 @@ npm run scrape:profiles -- --search-file=terms.txt
 
 # Limit total new profiles this run
 npm run scrape:profiles -- --max=5
+
+# Scrape specific profile URLs (comma-separated)
+npm run scrape:profiles -- --urls=https://www.upwork.com/freelancers/~01abc...,https://www.upwork.com/freelancers/~01def...
 ```
 
 4) Scrape your own profile (optional)
@@ -66,7 +69,7 @@ Notes:
 
 ### Scripts
 - `npm run login:persistent` — Launch Chrome with a persistent profile and save session.
-- `npm run scrape:profiles` — Discover freelancer profiles, deduping across runs. Supports `--search`, `--search-file`, and `--max`.
+- `npm run scrape:profiles` — Discover freelancer profiles, deduping across runs, or target specific URLs. Supports `--search`, `--search-file`, `--max`, and `--urls`.
 - `npm run scrape:myprofile` — Extract your own profile using the saved session.
 - `npm run export:csv` — Convert `data/profiles.jsonl` to `data/profiles.csv`.
 
@@ -97,6 +100,7 @@ Example JSONL row:
   "searchQuery": "market research",
   "totalJobs": 45,
   "totalHours": 520,
+  "linkedAccounts": [{"platform": "GitHub", "username": "janedoe", "profileUrl": "https://github.com/janedoe"}],
   "languages": [{"name": "English", "level": "Native"}, {"name": "French", "level": "Conversational"}],
   "badges": ["top_rated"],
   "availability": "More than 30 hrs/week",
@@ -118,9 +122,10 @@ Working:
 - Title fallback extraction from first line of profile descriptions
 - Normalized core fields: `hourlyRate`, `currency`, `earningsTotal`, `jobSuccessScore`
 - CSV exporter computes `$xx.xx/hr`, `$X,XXX`, and `JSS%` for quick viewing
-- Full CLI support: `--search`, `--search-file`, `--max` flags
+- Full CLI support: `--search`, `--search-file`, `--max`, `--urls` flags
 - Search query tracking per profile
 - Category detection (basic - primary/secondary when available)
+- Linked accounts extraction with resolved external profile URLs (GitHub, StackOverflow, etc.)
 
 Known Limitations:
 - **Rate limiting**: Upwork implements anti-bot measures. Keep volumes small (1-5 profiles per session) and space out runs by hours to avoid timeouts
@@ -129,7 +134,6 @@ Known Limitations:
 Next Up:
 - Section scrapers for Portfolio, Work History, and Linked Accounts (planned as separate JSONL outputs)
 - Enhanced category extraction  
-- Input URL list mode (provide curated profile links)
 - Better anti-detection measures (human-like scrolling, mouse movements)
 
 ---
@@ -139,7 +143,7 @@ Next Up:
    - Read `data/profiles.jsonl`, output per-section JSONLs:
      - `data/portfolio.jsonl`, `data/work_history.jsonl`, `data/accounts.jsonl`
    - Network-first parsing with DOM fallbacks
-2) Input URL list mode (bypass search, scrape specific profile URLs)
+2) Linked account enrichment (normalize URLs, capture additional metadata)
 3) Better anti-detection measures:
    - Human-like mouse movements and scrolling
    - Randomized timing patterns

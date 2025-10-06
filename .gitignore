@@ -20,7 +20,7 @@ data/*.json
 data/*.jsonl
 data/*.csv
 data/*.png
-
+data/
 # Env
 .env
 .env.*
@@ -42,3 +42,4 @@ linkedin_finder/*.log
 data/profiles.jsonl.backup
 linkedin_finder/fixtures/sample.jsonl
 
+*.csv
